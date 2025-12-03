@@ -1,51 +1,61 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import FileResponse
-import zipfile
+from fastapi import FastAPI, HTTPException
+import requests
 import os
+import zipfile
 import uuid
-import shutil
+from fastapi.responses import JSONResponse
 
 app = FastAPI()
 
-TMP_ROOT = "/app/tmp_zip"
-OUT_ROOT = "/app/unzipped_images"
-
-os.makedirs(TMP_ROOT, exist_ok=True)
-os.makedirs(OUT_ROOT, exist_ok=True)
-
+BASE_DIR = "/app/unzipped"
+os.makedirs(BASE_DIR, exist_ok=True)
 
 @app.post("/zip_to_image_files")
-async def zip_to_image_files(file: UploadFile = File(...)):
+def zip_to_image_files(payload: dict):
+    if "zip_url" not in payload:
+        raise HTTPException(status_code=400, detail="zip_url missing")
 
-    if not file.filename.endswith(".zip"):
-        raise HTTPException(400, "Only ZIP files are supported")
+    zip_url = payload["zip_url"]
 
     job_id = str(uuid.uuid4())
-    zip_path = os.path.join(TMP_ROOT, f"{job_id}.zip")
-    extract_dir = os.path.join(OUT_ROOT, job_id)
+    job_dir = os.path.join(BASE_DIR, job_id)
+    os.makedirs(job_dir, exist_ok=True)
 
-    os.makedirs(extract_dir, exist_ok=True)
+    zip_path = os.path.join(job_dir, "input.zip")
 
-    # 1️⃣ 保存 ZIP 到本地
-    with open(zip_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+    # 1️⃣ 下载 ZIP
+    try:
+        r = requests.get(zip_url, timeout=120)
+        r.raise_for_status()
+        with open(zip_path, "wb") as f:
+            f.write(r.content)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to download zip: {str(e)}")
 
     # 2️⃣ 解压 ZIP
     try:
         with zipfile.ZipFile(zip_path, "r") as zip_ref:
-            zip_ref.extractall(extract_dir)
+            zip_ref.extractall(job_dir)
     except Exception as e:
-        raise HTTPException(500, f"Unzip failed: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed to unzip: {str(e)}")
 
-    # 3️⃣ 收集图片文件
-    image_paths = []
-    for root, _, files in os.walk(extract_dir):
-        for fname in sorted(files):
-            if fname.lower().endswith((".jpg", ".jpeg", ".png")):
-                image_paths.append(os.path.join(root, fname))
+    # 3️⃣ 扫描解压后的图片文件
+    image_files = []
+    for root, dirs, files in os.walk(job_dir):
+        for file in files:
+            if file.lower().endswith((".jpg", ".jpeg", ".png")):
+                full_path = os.path.join(root, file)
+                image_files.append({
+                    "path": full_path,
+                    "media_type": "image/jpeg"
+                })
 
-    if not image_paths:
-        raise HTTPException(400, "No images found in ZIP")
+    if len(image_files) == 0:
+        raise HTTPException(status_code=400, detail="No image files found in zip")
 
-    # 4️⃣ ✅ 关键：直接返回 Array[File]（不要包 JSON）
-    return [FileResponse(p, media_type="image/jpeg") for p in image_paths]
+    # ✅ 4️⃣ 必须返回 JSON（不能返回 FileResponse！）
+    return JSONResponse({
+        "job_id": job_id,
+        "total_files": len(image_files),
+        "files": image_files   # ✅ Dify 可识别为 Array[File]
+    })
