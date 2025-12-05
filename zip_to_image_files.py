@@ -7,7 +7,8 @@ import uuid
 
 app = FastAPI()
 
-BASE_DIR = "/app/unzipped"
+# ✅ Use /tmp for Railway write safety
+BASE_DIR = "/tmp/unzipped"
 os.makedirs(BASE_DIR, exist_ok=True)
 
 @app.post("/zip_to_image_files")
@@ -15,22 +16,20 @@ def zip_to_image_files(payload: dict):
 
     zip_url = None
 
-    # ✅ 1️⃣ 支持两种输入格式
+    # ✅ 1️⃣ 支持两种输入格式 + ✅ 强力清洗所有隐藏换行/空格
     if "zip_url" in payload and payload["zip_url"]:
-        zip_url = payload["zip_url"].strip()
+        zip_url = "".join(payload["zip_url"].split())
 
     elif "files" in payload and len(payload["files"]) > 0:
         file_obj = payload["files"][0]
         if "url" in file_obj and file_obj["url"]:
-            zip_url = file_obj["url"].strip()
+            zip_url = "".join(file_obj["url"].split())
 
     if not zip_url:
         raise HTTPException(
             status_code=400,
             detail="zip_url missing or Dify files[0].url missing"
         )
-
-    zip_url = zip_url.strip()
 
     # ✅ 2️⃣ 创建任务目录
     job_id = str(uuid.uuid4())
@@ -39,7 +38,7 @@ def zip_to_image_files(payload: dict):
 
     zip_path = os.path.join(job_dir, "input.zip")
 
-    # ✅ 3️⃣ 下载 ZIP（stream 模式）
+    # ✅ 3️⃣ 下载 ZIP（stream 模式，防止内存爆）
     try:
         with requests.get(zip_url, stream=True, timeout=180) as r:
             r.raise_for_status()
@@ -60,8 +59,10 @@ def zip_to_image_files(payload: dict):
             zip_ref.extractall(job_dir)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to unzip: {str(e)}")
-    # ✅ 5️⃣ 重新打包为 ZIP
+
+    # ✅ 5️⃣ 重新打包为 ZIP（只打包图片）
     output_zip = os.path.join(job_dir, "output_images.zip")
+
     with zipfile.ZipFile(output_zip, "w", zipfile.ZIP_DEFLATED) as zout:
         for root, _, files in os.walk(job_dir):
             for file in files:
@@ -69,10 +70,11 @@ def zip_to_image_files(payload: dict):
                     full_path = os.path.join(root, file)
                     arcname = os.path.relpath(full_path, job_dir)
                     zout.write(full_path, arcname=arcname)
+
     if not os.path.exists(output_zip):
         raise HTTPException(status_code=400, detail="Repack failed")
 
-    # ✅ 6️⃣ 返回真实 ZIP 文件
+    # ✅ 6️⃣ 返回真实 ZIP 文件（Dify 可接收为 File）
     return FileResponse(
         path=output_zip,
         media_type="application/zip",
