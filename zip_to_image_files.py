@@ -18,12 +18,12 @@ def zip_to_image_files(payload: dict):
 
     # ✅ 1️⃣ 支持两种输入格式
     if "zip_url" in payload and payload["zip_url"]:
-        zip_url = payload["zip_url"]
+        zip_url = payload["zip_url"].strip()
 
     elif "files" in payload and len(payload["files"]) > 0:
         file_obj = payload["files"][0]
         if "url" in file_obj and file_obj["url"]:
-            zip_url = file_obj["url"]
+           zip_url = file_obj["url"].strip()
 
     if not zip_url:
         raise HTTPException(
