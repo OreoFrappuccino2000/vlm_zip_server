@@ -1,18 +1,16 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 import requests
 import os
 import zipfile
 import uuid
-from fastapi.responses import JSONResponse, StreamingResponse
+import shutil
 
 app = FastAPI()
 
 BASE_DIR = "/app/unzipped"
 os.makedirs(BASE_DIR, exist_ok=True)
 
-# =========================================================
-# ✅ ORIGINAL: unzip ZIP → return image files for Dify
-# =========================================================
 @app.post("/zip_to_image_files")
 def zip_to_image_files(payload: dict):
 
@@ -60,52 +58,22 @@ def zip_to_image_files(payload: dict):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to unzip: {str(e)}")
 
-    # ✅ 5️⃣ 扫描图片文件
-    image_files = []
-    for root, _, files in os.walk(job_dir):
-        for file in files:
-            if file.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
-                full_path = os.path.join(root, file)
-                ext = os.path.splitext(file)[1].lower()
-                media_type = "image/png" if ext == ".png" else "image/jpeg"
+    # ✅ 5️⃣ 重新打包为 Dify 可接收的 ZIP
+    output_zip = os.path.join(job_dir, "output_images.zip")
 
-                image_files.append({
-                    "path": full_path,
-                    "media_type": media_type
-                })
+    with zipfile.ZipFile(output_zip, "w", zipfile.ZIP_DEFLATED) as zout:
+        for root, _, files in os.walk(job_dir):
+            for file in files:
+                if file.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
+                    full_path = os.path.join(root, file)
+                    zout.write(full_path, arcname=file)
 
-    if not image_files:
-        raise HTTPException(status_code=400, detail="No image files found in zip")
+    if not os.path.exists(output_zip):
+        raise HTTPException(status_code=400, detail="Repack failed")
 
-    return JSONResponse({
-        "job_id": job_id,
-        "total_files": len(image_files),
-        "files": image_files
-    })
-
-# =========================================================
-# ✅ NEW: PROXY ZIP DOWNLOAD (FOR XUMI / BLOCKED PLATFORMS)
-# =========================================================
-@app.get("/proxy_zip")
-def proxy_zip(zip_url: str):
-    """
-    Xumi calls THIS endpoint instead of calling Railway ZIP directly.
-    Your server fetches the ZIP internally and streams it back.
-    """
-
-    try:
-        r = requests.get(zip_url, stream=True, timeout=180)
-        r.raise_for_status()
-
-        headers = {
-            "Content-Disposition": "attachment; filename=frames.zip"
-        }
-
-        return StreamingResponse(
-            r.iter_content(chunk_size=1024 * 512),
-            media_type="application/zip",
-            headers=headers
-        )
-
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Proxy fetch failed: {str(e)}")
+    # ✅ ✅ ✅ 6️⃣ 关键修复：返回“真实二进制文件”，不是 JSON
+    return FileResponse(
+        path=output_zip,
+        media_type="application/zip",
+        filename="frames.zip"
+    )
