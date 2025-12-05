@@ -1,16 +1,3 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
-import requests
-import os
-import zipfile
-import uuid
-import shutil
-
-app = FastAPI()
-
-BASE_DIR = "/app/unzipped"
-os.makedirs(BASE_DIR, exist_ok=True)
-
 @app.post("/zip_to_image_files")
 def zip_to_image_files(payload: dict):
 
@@ -23,13 +10,16 @@ def zip_to_image_files(payload: dict):
     elif "files" in payload and len(payload["files"]) > 0:
         file_obj = payload["files"][0]
         if "url" in file_obj and file_obj["url"]:
-           zip_url = file_obj["url"].strip()
+            zip_url = file_obj["url"].strip()
 
     if not zip_url:
         raise HTTPException(
             status_code=400,
             detail="zip_url missing or Dify files[0].url missing"
         )
+
+    # ✅ ✅ 再次强制 clean（防止 UI 注入脏字符）
+    zip_url = zip_url.strip()
 
     # ✅ 2️⃣ 创建任务目录
     job_id = str(uuid.uuid4())
@@ -38,12 +28,14 @@ def zip_to_image_files(payload: dict):
 
     zip_path = os.path.join(job_dir, "input.zip")
 
-    # ✅ 3️⃣ 下载 ZIP
+    # ✅ 3️⃣ 下载 ZIP（改为 stream，避免大文件内存爆炸）
     try:
-        r = requests.get(zip_url, timeout=180)
-        r.raise_for_status()
-        with open(zip_path, "wb") as f:
-            f.write(r.content)
+        with requests.get(zip_url, stream=True, timeout=180) as r:
+            r.raise_for_status()
+            with open(zip_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        f.write(chunk)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to download zip: {str(e)}")
 
@@ -58,7 +50,7 @@ def zip_to_image_files(payload: dict):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to unzip: {str(e)}")
 
-    # ✅ 5️⃣ 重新打包为 Dify 可接收的 ZIP
+    # ✅ 5️⃣ 重新打包为 Dify 可接收的 ZIP（排除 input.zip & output.zip 自身）
     output_zip = os.path.join(job_dir, "output_images.zip")
 
     with zipfile.ZipFile(output_zip, "w", zipfile.ZIP_DEFLATED) as zout:
@@ -66,12 +58,13 @@ def zip_to_image_files(payload: dict):
             for file in files:
                 if file.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
                     full_path = os.path.join(root, file)
-                    zout.write(full_path, arcname=file)
+                    arcname = os.path.relpath(full_path, job_dir)
+                    zout.write(full_path, arcname=arcname)
 
     if not os.path.exists(output_zip):
         raise HTTPException(status_code=400, detail="Repack failed")
 
-    # ✅ ✅ ✅ 6️⃣ 关键修复：返回“真实二进制文件”，不是 JSON
+    # ✅ ✅ ✅ 6️⃣ 返回真实二进制 ZIP（Dify 可直接接收为 File）
     return FileResponse(
         path=output_zip,
         media_type="application/zip",
