@@ -60,10 +60,8 @@ def zip_to_image_files(payload: dict):
             zip_ref.extractall(job_dir)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to unzip: {str(e)}")
-
     # ✅ 5️⃣ 重新打包为 ZIP
     output_zip = os.path.join(job_dir, "output_images.zip")
-
     with zipfile.ZipFile(output_zip, "w", zipfile.ZIP_DEFLATED) as zout:
         for root, _, files in os.walk(job_dir):
             for file in files:
@@ -71,7 +69,6 @@ def zip_to_image_files(payload: dict):
                     full_path = os.path.join(root, file)
                     arcname = os.path.relpath(full_path, job_dir)
                     zout.write(full_path, arcname=arcname)
-
     if not os.path.exists(output_zip):
         raise HTTPException(status_code=400, detail="Repack failed")
 
